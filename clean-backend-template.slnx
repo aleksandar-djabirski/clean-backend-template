@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="src/Product.Abstractions/Product.Abstractions.csproj" />
+  <Project Path="src/Product.Guardrails.Analyzers/Product.Guardrails.Analyzers.csproj" />
+  <Project Path="src/Product.Template.Tool/Product.Template.Tool.csproj" />
+  <Project Path="tests/Product.Guardrails.Analyzers.Tests/Product.Guardrails.Analyzers.Tests.csproj" />
+  <Project Path="tests/Product.Template.Tool.Tests/Product.Template.Tool.Tests.csproj" />
+</Solution>

@@ -1,0 +1,14 @@
+.dotnet/
+.dotnet-home/
+.localtmp/
+.tmp/
+.nuget/
+.DS_Store
+.vs/
+.vscode/
+artifacts/
+bin/
+obj/
+TestResults/
+*.user
+*.suo

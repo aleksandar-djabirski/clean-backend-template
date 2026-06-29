@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  phase-0:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.301
+      - name: Build abstractions
+        run: dotnet build src/Product.Abstractions/Product.Abstractions.csproj --nologo
+      - name: Build analyzers
+        run: dotnet build src/Product.Guardrails.Analyzers/Product.Guardrails.Analyzers.csproj --nologo
+      - name: Build tool
+        run: dotnet build src/Product.Template.Tool/Product.Template.Tool.csproj --nologo
+      - name: Analyzer fixtures
+        run: dotnet run --project tests/Product.Guardrails.Analyzers.Tests/Product.Guardrails.Analyzers.Tests.csproj
+      - name: Generated product smoke test
+        run: dotnet run --project tests/Product.Template.Tool.Tests/Product.Template.Tool.Tests.csproj

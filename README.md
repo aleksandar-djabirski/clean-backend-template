@@ -31,7 +31,7 @@ The minimal Phase 1 baseline is also scaffolded:
 - Generated products include an `{Product}.Abstractions` project and an API project reference to it.
 - Generated products include a module facade, ownership map, module capability map, guardrail exception skeleton, package policy skeleton, migration safety profile, and vendor-neutral observability baseline.
 - `verify` checks required Phase 1 files, analyzer reference, abstractions reference, module facades, unresolved placeholders, and internal-by-default module implementation types.
-- The smoke test can scaffold a small in-memory `weather-query` endpoint. This is a mechanical reference fixture similar in spirit to a framework weather sample; it is not product business logic and does not prove Phase 2 product usefulness.
+- The smoke tests have two named generated-product paths: the baseline command/query smoke path, and a Phase 3 candidate `weather-query` smoke fixture. Weather is a mechanical reference fixture similar in spirit to a framework weather sample; it is not product business logic and does not prove Phase 2 product usefulness or Phase 3 readiness.
 
 Target SDK and framework are pinned to .NET `10.0.301` and `net10.0`.
 
@@ -86,6 +86,23 @@ Phase 1 has added only the core baseline pieces that are cheap and mechanically 
 - migration safety policy skeleton
 
 Do not continue straight into every later control. The in-memory Weather endpoint is useful as a generated reference feature, but it is not enough to enter Phase 3. Phase 2 is first real product validation. Phase 3 is admission-controlled expansion. Phase 4 is periodic sustainability review.
+
+## Phase 3 Candidate Smoke Fixture
+
+The generated `weather-query` feature is the current Phase 3 candidate smoke fixture. It proves that the tool can create and verify a small read-only in-memory endpoint shape beyond the baseline command/query path.
+
+It proves mechanics only:
+
+- `new-feature --kind weather-query` generates endpoint, query, handler, and response records.
+- The generated endpoint stays inside an explicit endpoint adapter.
+- The generated product still builds with guardrail analyzers enabled.
+- `verify` still passes on the generated output.
+
+It does not prove Phase 3 admission:
+
+- It has no persistence, migration, provider, external API, background workflow, caching, OpenTelemetry exporter, special HTTP category, ownership ambiguity, or production performance pressure.
+- It must not be used as evidence that Phase 3 controls belong in the permanent baseline.
+- Phase 3 still requires real product pressure or repeated reference work before adding durable controls.
 
 ## Phase 3 Backlog
 

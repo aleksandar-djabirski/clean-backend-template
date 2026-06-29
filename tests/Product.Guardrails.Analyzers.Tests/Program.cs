@@ -8,10 +8,13 @@ var tests = new (string Name, Action Body)[]
 {
     ("PGB001 does not flag ordinary collections", Pgb001AllowsCollections),
     ("PGB001 flags EF Core mutation in query handlers and private helpers", Pgb001FlagsEfMutation),
+    ("PGB001 flags EF bulk and raw-SQL mutations in query handlers", Pgb001FlagsBulkAndRawSqlMutation),
+    ("PGB001 flags EntityEntry.State assignment in query handlers", Pgb001FlagsEntityStateAssignment),
     ("PGB006 allows endpoint adapters with one typed handler", Pgb006AllowsValidEndpoint),
     ("PGB006 blocks route mappings outside endpoint adapters", Pgb006BlocksRouteMappingOutsideAdapter),
     ("PGB006 blocks forbidden endpoint dependencies", Pgb006BlocksForbiddenDependencies),
     ("PGB003 flags explicit generic repository wrappers", Pgb003FlagsGenericRepository),
+    ("PGB003 flags hand-written non-generic repository wrappers", Pgb003FlagsNonGenericRepository),
 };
 
 foreach (var test in tests)
@@ -63,6 +66,46 @@ static void Pgb001FlagsEfMutation()
         """);
 
     AssertDiagnosticCount(diagnostics, "PGB001", 2);
+}
+
+static void Pgb001FlagsBulkAndRawSqlMutation()
+{
+    var diagnostics = Analyze(FixtureStubs() + """
+        internal sealed class GetThingQueryHandler
+        {
+            private readonly Microsoft.EntityFrameworkCore.DbContext _db = new();
+            private readonly Microsoft.EntityFrameworkCore.DbSet<Thing> _things = new();
+
+            public void Handle()
+            {
+                Microsoft.EntityFrameworkCore.RelationalQueryableExtensions.ExecuteDelete(_things);
+                Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlRaw(_db.Database, "delete from things");
+            }
+        }
+
+        internal sealed class Thing;
+        """);
+
+    AssertDiagnosticCount(diagnostics, "PGB001", 2);
+}
+
+static void Pgb001FlagsEntityStateAssignment()
+{
+    var diagnostics = Analyze(FixtureStubs() + """
+        internal sealed class GetThingQueryHandler
+        {
+            private readonly Microsoft.EntityFrameworkCore.DbContext _db = new();
+
+            public void Handle(Thing thing)
+            {
+                _db.Entry(thing).State = Microsoft.EntityFrameworkCore.EntityState.Deleted;
+            }
+        }
+
+        internal sealed class Thing;
+        """);
+
+    AssertDiagnosticCount(diagnostics, "PGB001", 1);
 }
 
 static void Pgb006AllowsValidEndpoint()
@@ -137,6 +180,22 @@ static void Pgb003FlagsGenericRepository()
     AssertDiagnosticCount(diagnostics, "PGB003", 1);
 }
 
+static void Pgb003FlagsNonGenericRepository()
+{
+    var diagnostics = Analyze(FixtureStubs() + """
+        internal sealed class OrderRepository
+        {
+            private readonly Microsoft.EntityFrameworkCore.DbContext _db = new();
+            public void Add(object order) { }
+            public object Get(System.Guid id) => new();
+            public void Update(object order) { }
+            public void Delete(System.Guid id) { }
+        }
+        """);
+
+    AssertDiagnosticCount(diagnostics, "PGB003", 1);
+}
+
 static ImmutableArray<Diagnostic> Analyze(string source)
 {
     var compilation = CSharpCompilation.Create(
@@ -195,6 +254,8 @@ static string FixtureStubs() => """
         {
             public int SaveChanges() => 0;
             public System.Threading.Tasks.Task<int> SaveChangesAsync(System.Threading.CancellationToken cancellationToken = default) => System.Threading.Tasks.Task.FromResult(0);
+            public DatabaseFacade Database { get; } = new();
+            public Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry<TEntity> Entry<TEntity>(TEntity entity) => new();
         }
 
         public class DbSet<TEntity>
@@ -203,6 +264,30 @@ static string FixtureStubs() => """
             public void Update(TEntity entity) { }
             public void Remove(TEntity entity) { }
             public void Clear() { }
+        }
+
+        public class DatabaseFacade { }
+
+        public enum EntityState { Detached, Unchanged, Deleted, Modified, Added }
+
+        public static class RelationalQueryableExtensions
+        {
+            public static int ExecuteDelete<TSource>(this DbSet<TSource> source) => 0;
+            public static int ExecuteUpdate<TSource>(this DbSet<TSource> source, object setters) => 0;
+        }
+
+        public static class RelationalDatabaseFacadeExtensions
+        {
+            public static int ExecuteSqlRaw(this DatabaseFacade database, string sql) => 0;
+            public static int ExecuteSqlInterpolated(this DatabaseFacade database, System.FormattableString sql) => 0;
+        }
+    }
+
+    namespace Microsoft.EntityFrameworkCore.ChangeTracking
+    {
+        public class EntityEntry<TEntity>
+        {
+            public Microsoft.EntityFrameworkCore.EntityState State { get; set; }
         }
     }
     """;

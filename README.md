@@ -19,18 +19,29 @@ bootstrap product
 
 Phase 0 is implemented as the feasibility gate:
 
-- `Product.Guardrails.Analyzers` implements `PGB001`, `PGB006`, and a limited `PGB003` spike.
-- `Product.Template.Tool` implements `bootstrap`, `new-feature`, and `verify`.
-- Analyzer fixtures prove passing and failing cases.
-- Generated-product smoke tests create a disposable `SampleProduct`, scaffold `CreateRequest` and `GetRequest`, build, and verify it.
+- `Product.Guardrails.Analyzers` implements `PGB001`, `PGB006`, and a `PGB003` spike, and is
+  packaged as a NuGet analyzer so generated products reference it portably (see Architecture).
+  - `PGB001` covers direct EF mutation APIs (`Add`/`Update`/`Remove`/`SaveChanges`), bulk and
+    raw-SQL extensions (`ExecuteUpdate`/`ExecuteDelete`/`ExecuteSql*`), and `Entry(x).State = ...`.
+  - `PGB003` detects both generic (`Repository<T>`) and hand-written non-generic repository/CRUD
+    wrappers. It ships as `Info` (heuristic spike) but is promoted to a build-breaking error inside
+    generated products via `.editorconfig`.
+- `Product.Template.Tool` implements `bootstrap`, `new-feature`, and `verify`. `--kind` (not the
+  feature name) drives command-vs-query registration.
+- Analyzer fixtures prove passing and failing cases for every rule.
+- Generated-product smoke tests create disposable products, scaffold command/query/weather
+  features, build under the real analyzers, and verify them — including portability, kind-based
+  registration, the package policy, guardrail-exception expiry, and the module boundary gate.
 - CI runs the same practical path instead of checking only that files exist.
 
 The minimal Phase 1 baseline is also scaffolded:
 
-- `Product.Abstractions` provides shared `Result`, `Error`, and validation conventions.
+- `Product.Abstractions` provides shared `Result`, typed `Error`/`ErrorType`, and synchronous `IValidator` conventions.
 - Generated products include an `{Product}.Abstractions` project and an API project reference to it.
-- Generated products include a module facade, ownership map, module capability map, guardrail exception skeleton, package policy skeleton, migration safety profile, and vendor-neutral observability baseline.
-- `verify` checks required Phase 1 files, analyzer reference, abstractions reference, module facades, unresolved placeholders, and internal-by-default module implementation types.
+- Scaffolded handlers return `Result<T>` and stay HTTP-free; endpoint adapters translate at the edge through `EndpointResults`, mapping failures to RFC 7807 `ProblemDetails` with a status derived from the error type. The shipped `Result`/`Error` abstractions are actually exercised, not dead code.
+- Generated products include an `AGENTS.md` contract, a module facade, ownership map, module capability map, guardrail exception skeleton, package policy, migration safety profile, and vendor-neutral observability baseline.
+- `verify` checks required Phase 1 files, the analyzer package reference, abstractions reference, module facades, unresolved placeholders, internal-by-default module implementation types, the package policy (prohibited packages + locked restore with a committed `packages.lock.json`), and guardrail-exception validity (schema + expiry).
+- The reference `weather-query` feature obeys the template's own conventions: time comes from an injected `TimeProvider` and sample values are deterministic (no `DateTime.UtcNow`, no `Random.Shared`).
 - The smoke tests have two named generated-product paths: the baseline command/query smoke path, and a Phase 3 candidate `weather-query` smoke fixture. Weather is a mechanical reference fixture similar in spirit to a framework weather sample; it is not product business logic and does not prove Phase 2 product usefulness or Phase 3 readiness.
 
 Target SDK and framework are pinned to .NET `10.0.301` and `net10.0`.
@@ -49,6 +60,38 @@ That is why Phase 0 is deliberately small. It proves the machinery before adding
 - `PGB006` keeps route mappings in explicit endpoint adapters and blocks dangerous direct endpoint dependencies.
 - `PGB003` is only a feasibility spike for obvious generic repository/CRUD wrappers. It must not be treated as semantic proof.
 - The generated sample module is disposable verification material, not product business logic.
+
+## Architecture: Single-Assembly Modular Monolith
+
+This is a deliberate decision, stated out loud because it changes how boundaries are enforced.
+
+Generated products are a **modular monolith inside one `{Product}.Api` assembly**. Modules are
+folders (`Modules/<Module>/<Feature>`), not separate projects. There is no compiler-enforced
+boundary between modules, and the API host can technically see every module's types.
+
+The alternative — one real project/assembly per module with `internal` surfaces enforced by the
+compiler — is stronger but heavier to generate, build, and maintain. For solo/client SaaS work the
+single-assembly shape is the chosen trade-off.
+
+Because the strongest enforcement tier (assembly boundaries) is intentionally absent, the
+boundaries are held by:
+
+- The guardrail analyzers (`PGB001`, `PGB003`, `PGB006`), which are symbol-based and build-breaking.
+- A `verify` boundary gate that asserts only the `<Module>Module` facade is public and every other
+  feature type is `internal`. It strips comments and string literals before scanning, so it matches
+  real declarations rather than the word "public" in prose, and is independent of modifier order.
+
+This gate is lexical, not a full compiler check — it is a backstop for the analyzers, not a
+replacement for assembly boundaries. If a product later needs true assembly isolation, splitting a
+module into its own project is the documented escalation, not a silent assumption.
+
+## Portability
+
+A generated product must build off this machine, with no path back into this template repo. The
+guardrail analyzer is therefore packed as a NuGet package into a product-local feed
+(`eng/local-feed`) and referenced by `PackageReference` (`PrivateAssets="all"`) through a generated
+`nuget.config`. The product also commits `packages.lock.json` and restores in locked mode. There
+are no absolute analyzer paths in any generated project.
 
 ## What Not To Add Yet
 

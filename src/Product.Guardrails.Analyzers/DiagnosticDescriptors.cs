@@ -24,10 +24,10 @@ internal static class DiagnosticDescriptors
 
     public static readonly DiagnosticDescriptor GenericPersistenceWrapper = new(
         "PGB003",
-        "Generic persistence wrappers are not part of the Phase 0 baseline",
-        "Type '{0}' looks like a generic repository or CRUD persistence wrapper",
+        "Persistence wrappers are not part of the Phase 0 baseline",
+        "Type '{0}' looks like a repository or CRUD persistence wrapper",
         "ProductGuardrails",
         DiagnosticSeverity.Info,
         isEnabledByDefault: true,
-        description: "Use explicit business capabilities instead of broad generic persistence wrappers. This Phase 0 rule is deliberately limited.");
+        description: "Use explicit business capabilities instead of generic or hand-written repository/CRUD persistence wrappers. Default severity is Info because this remains a heuristic spike; generated products raise it to error via .editorconfig.");
 }

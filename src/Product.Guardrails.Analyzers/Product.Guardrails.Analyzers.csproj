@@ -1,10 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <IsPackable>false</IsPackable>
-    <IncludeBuildOutput>false</IncludeBuildOutput>
     <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
-    <NoWarn>$(NoWarn);RS1036</NoWarn>
+    <NoWarn>$(NoWarn);RS1036;NU5128</NoWarn>
+
+    <!-- Pack as a standard Roslyn analyzer package so generated products can reference it by
+         PackageReference and stay portable off this machine. -->
+    <IsPackable>true</IsPackable>
+    <PackageId>Product.Guardrails.Analyzers</PackageId>
+    <Version>0.1.0</Version>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,5 +23,9 @@
       <HintPath>$(MSBuildToolsPath)/Microsoft.CodeAnalysis.CSharp.dll</HintPath>
       <Private>false</Private>
     </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="$(OutputPath)$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visibility="false" />
   </ItemGroup>
 </Project>

@@ -1,10 +1,14 @@
 using System.Diagnostics;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace Product.Template.Tool;
 
 public static class ToolRunner
 {
+    private const string AnalyzerPackageId = "Product.Guardrails.Analyzers";
+    private const string AnalyzerPackageVersion = "0.1.0";
+
     public static async Task<int> RunAsync(string[] args, TextWriter output, TextWriter error)
     {
         if (args.Length == 0 || args[0] is "-h" or "--help")
@@ -42,8 +46,8 @@ public static class ToolRunner
         var apiDirectory = Path.Combine(productDirectory, "src", $"{productName}.Api");
         var abstractionsDirectory = Path.Combine(productDirectory, "src", $"{productName}.Abstractions");
         var moduleDirectory = Path.Combine(apiDirectory, "Modules", moduleName);
-        var analyzerAssembly = FindTemplateRoot() is { } templateRoot
-            ? Path.Combine(templateRoot, "src", "Product.Guardrails.Analyzers", "bin", "Debug", "net10.0", "Product.Guardrails.Analyzers.dll")
+        var analyzerProject = FindTemplateRoot() is { } templateRoot
+            ? Path.Combine(templateRoot, "src", "Product.Guardrails.Analyzers", "Product.Guardrails.Analyzers.csproj")
             : null;
 
         if (Directory.Exists(productDirectory))
@@ -56,6 +60,31 @@ public static class ToolRunner
         Directory.CreateDirectory(Path.Combine(apiDirectory, "Guardrails"));
         Directory.CreateDirectory(Path.Combine(productDirectory, "docs", "modules"));
         Directory.CreateDirectory(Path.Combine(productDirectory, "eng"));
+
+        // Pack the guardrail analyzer into a product-local NuGet feed so the generated product
+        // references it by PackageReference and stays buildable off this machine.
+        var hasAnalyzerPackage = false;
+        if (analyzerProject is not null && File.Exists(analyzerProject))
+        {
+            var localFeed = Path.Combine(productDirectory, "eng", "local-feed");
+            Directory.CreateDirectory(localFeed);
+            using var packError = new StringWriter();
+            var packExit = await RunProcessAsync(
+                FindDotnet(),
+                $"pack \"{analyzerProject}\" -c Release -o \"{localFeed}\" --nologo",
+                Path.GetDirectoryName(analyzerProject)!,
+                output,
+                packError);
+
+            if (packExit != 0)
+            {
+                throw new InvalidOperationException($"Failed to pack guardrail analyzer.{Environment.NewLine}{packError}");
+            }
+
+            hasAnalyzerPackage = true;
+            await File.WriteAllTextAsync(Path.Combine(productDirectory, "nuget.config"), NuGetConfigFile());
+            await File.WriteAllTextAsync(Path.Combine(productDirectory, ".editorconfig"), EditorConfigFile());
+        }
 
         await File.WriteAllTextAsync(Path.Combine(productDirectory, "global.json"), """
         {
@@ -76,13 +105,15 @@ public static class ToolRunner
         </Project>
         """);
         await File.WriteAllTextAsync(Path.Combine(productDirectory, $"{productName}.slnx"), SolutionFile(productName));
+        await File.WriteAllTextAsync(Path.Combine(productDirectory, "AGENTS.md"), AgentsFile(productName, moduleName));
         await File.WriteAllTextAsync(Path.Combine(abstractionsDirectory, $"{productName}.Abstractions.csproj"), AbstractionsProjectFile());
         await File.WriteAllTextAsync(Path.Combine(abstractionsDirectory, "Error.cs"), ErrorFile(productName));
         await File.WriteAllTextAsync(Path.Combine(abstractionsDirectory, "Result.cs"), ResultFile(productName));
         await File.WriteAllTextAsync(Path.Combine(abstractionsDirectory, "Validation.cs"), ValidationFile(productName));
-        await File.WriteAllTextAsync(Path.Combine(apiDirectory, $"{productName}.Api.csproj"), ApiProjectFile(productName, analyzerAssembly));
+        await File.WriteAllTextAsync(Path.Combine(apiDirectory, $"{productName}.Api.csproj"), ApiProjectFile(productName, hasAnalyzerPackage));
         await File.WriteAllTextAsync(Path.Combine(apiDirectory, "Program.cs"), ProgramFile(productName, moduleName));
         await File.WriteAllTextAsync(Path.Combine(apiDirectory, "Guardrails", "EndpointAdapterAttribute.cs"), EndpointAdapterAttributeFile(productName));
+        await File.WriteAllTextAsync(Path.Combine(apiDirectory, "Guardrails", "EndpointResults.cs"), EndpointResultsFile(productName));
         await File.WriteAllTextAsync(Path.Combine(moduleDirectory, $"{moduleName}Module.cs"), ModuleFile(productName, moduleName));
         await File.WriteAllTextAsync(Path.Combine(productDirectory, "docs", "ownership-map.md"), OwnershipMapFile(productName, moduleName));
         await File.WriteAllTextAsync(Path.Combine(productDirectory, "docs", "modules", $"{moduleName}.capabilities.md"), ModuleCapabilityMapFile(moduleName));
@@ -91,6 +122,24 @@ public static class ToolRunner
         await File.WriteAllTextAsync(Path.Combine(productDirectory, "docs", "observability-baseline.md"), ObservabilityBaselineFile());
         await File.WriteAllTextAsync(Path.Combine(productDirectory, "eng", "guardrail-exceptions.json"), GuardrailExceptionsConfigFile());
         await File.WriteAllTextAsync(Path.Combine(productDirectory, "eng", "package-policy.json"), PackagePolicyConfigFile());
+
+        // Produce the committed lock file so locked restore is enforceable from the first commit.
+        if (hasAnalyzerPackage)
+        {
+            var apiProject = Path.Combine(apiDirectory, $"{productName}.Api.csproj");
+            using var restoreError = new StringWriter();
+            var restoreExit = await RunProcessAsync(
+                FindDotnet(),
+                $"restore \"{apiProject}\"",
+                productDirectory,
+                output,
+                restoreError);
+
+            if (restoreExit != 0)
+            {
+                throw new InvalidOperationException($"Failed to generate lock file via restore.{Environment.NewLine}{restoreError}");
+            }
+        }
 
         output.WriteLine($"Bootstrapped {productName} at {productDirectory}");
         return 0;
@@ -152,8 +201,13 @@ public static class ToolRunner
             return 1;
         }
 
+        var lockedRestore = ReadPackagePolicy(productDirectory)?.LockedRestoreRequired == true;
+        var buildArguments = lockedRestore
+            ? $"build \"{apiProject}\" -p:RestoreLockedMode=true"
+            : $"build \"{apiProject}\"";
+
         var dotnet = FindDotnet();
-        return await RunProcessAsync(dotnet, $"build \"{apiProject}\"", productDirectory, output, error);
+        return await RunProcessAsync(dotnet, buildArguments, productDirectory, output, error);
     }
 
     private static List<string> VerifyStructure(string productDirectory)
@@ -180,9 +234,9 @@ public static class ToolRunner
         }
 
         var projectText = File.ReadAllText(apiProject);
-        if (!projectText.Contains("Product.Guardrails.Analyzers.dll", StringComparison.Ordinal))
+        if (!projectText.Contains($"Include=\"{AnalyzerPackageId}\"", StringComparison.Ordinal))
         {
-            problems.Add("API project must reference Product.Guardrails.Analyzers.dll as an analyzer.");
+            problems.Add($"API project must reference the {AnalyzerPackageId} analyzer package.");
         }
 
         if (!projectText.Contains($"{productName}.Abstractions.csproj", StringComparison.Ordinal))
@@ -192,10 +246,13 @@ public static class ToolRunner
 
         problems.AddRange(VerifyRequiredFiles(productDirectory, productName));
         problems.AddRange(VerifyModuleBoundaries(productDirectory, productName));
+        problems.AddRange(VerifyPackagePolicy(productDirectory, productName));
+        problems.AddRange(VerifyGuardrailExceptions(productDirectory));
 
         var unresolved = Directory.EnumerateFiles(productDirectory, "*", SearchOption.AllDirectories)
             .Where(path => !path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
-                           !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+                           !path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) &&
+                           !path.Contains($"{Path.DirectorySeparatorChar}local-feed{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .Where(path => File.ReadAllText(path).Contains("{{", StringComparison.Ordinal) ||
                            File.ReadAllText(path).Contains("TODO_TEMPLATE", StringComparison.Ordinal))
             .ToArray();
@@ -212,6 +269,7 @@ public static class ToolRunner
     {
         var requiredFiles = new[]
         {
+            Path.Combine(productDirectory, "AGENTS.md"),
             Path.Combine(productDirectory, "docs", "ownership-map.md"),
             Path.Combine(productDirectory, "docs", "guardrail-exceptions.md"),
             Path.Combine(productDirectory, "docs", "migration-safety-profile.md"),
@@ -253,6 +311,15 @@ public static class ToolRunner
         }
     }
 
+    // Lexical boundary gate. In the single-assembly design there is no compiler-enforced module
+    // boundary, so this complements the analyzers by asserting that feature files declare only
+    // internal types (the module facade is the one public surface). It strips comments and string
+    // literals first so it matches real declarations, not the word "public" in prose, and it is
+    // independent of modifier order and covers every top-level type kind.
+    private static readonly Regex PublicTypeDeclaration = new(
+        @"(?<modifiers>(?:\b(?:public|internal|sealed|static|abstract|partial|file|readonly|ref)\b\s+)*)\b(?:class|struct|interface|enum|record|delegate)\b",
+        RegexOptions.Compiled);
+
     private static IEnumerable<string> VerifyModuleBoundaries(string productDirectory, string productName)
     {
         var modulesDirectory = Path.Combine(productDirectory, "src", $"{productName}.Api", "Modules");
@@ -261,7 +328,6 @@ public static class ToolRunner
             yield break;
         }
 
-        var publicTypePattern = new Regex(@"\bpublic\s+(?:sealed\s+|static\s+|abstract\s+|partial\s+)*\b(class|record|struct|interface)\b", RegexOptions.Compiled);
         foreach (var file in Directory.EnumerateFiles(modulesDirectory, "*.cs", SearchOption.AllDirectories))
         {
             if (file.EndsWith("Module.cs", StringComparison.Ordinal))
@@ -269,25 +335,272 @@ public static class ToolRunner
                 continue;
             }
 
-            var text = File.ReadAllText(file);
-            if (publicTypePattern.IsMatch(text))
+            var code = StripCommentsAndStrings(File.ReadAllText(file));
+            var declaresPublicType = PublicTypeDeclaration.Matches(code)
+                .Any(match => Regex.IsMatch(match.Groups["modifiers"].Value, @"\bpublic\b"));
+
+            if (declaresPublicType)
             {
                 yield return $"Module implementation types must be internal by default: {file}";
             }
         }
     }
 
+    private static string StripCommentsAndStrings(string source)
+    {
+        var builder = new System.Text.StringBuilder(source.Length);
+        for (var i = 0; i < source.Length; i++)
+        {
+            var c = source[i];
+
+            if (c == '/' && i + 1 < source.Length && source[i + 1] == '/')
+            {
+                while (i < source.Length && source[i] != '\n')
+                {
+                    i++;
+                }
+
+                continue;
+            }
+
+            if (c == '/' && i + 1 < source.Length && source[i + 1] == '*')
+            {
+                i += 2;
+                while (i + 1 < source.Length && !(source[i] == '*' && source[i + 1] == '/'))
+                {
+                    i++;
+                }
+
+                i++;
+                continue;
+            }
+
+            if (c is '"' or '\'')
+            {
+                var quote = c;
+                var verbatim = i > 0 && source[i - 1] == '@';
+                i++;
+                while (i < source.Length)
+                {
+                    if (!verbatim && source[i] == '\\')
+                    {
+                        i += 2;
+                        continue;
+                    }
+
+                    if (source[i] == quote)
+                    {
+                        if (verbatim && i + 1 < source.Length && source[i + 1] == quote)
+                        {
+                            i += 2;
+                            continue;
+                        }
+
+                        break;
+                    }
+
+                    i++;
+                }
+
+                continue;
+            }
+
+            builder.Append(c);
+        }
+
+        return builder.ToString();
+    }
+
+    private sealed record PackagePolicy(bool LockedRestoreRequired, IReadOnlyList<string> ProhibitedPackages);
+
+    private static PackagePolicy? ReadPackagePolicy(string productDirectory)
+    {
+        var path = Path.Combine(productDirectory, "eng", "package-policy.json");
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        var root = document.RootElement;
+
+        var locked = root.TryGetProperty("lockedRestoreRequired", out var lockedElement) &&
+                     lockedElement.ValueKind == JsonValueKind.True;
+
+        var prohibited = root.TryGetProperty("prohibitedPackages", out var prohibitedElement) &&
+                         prohibitedElement.ValueKind == JsonValueKind.Array
+            ? prohibitedElement.EnumerateArray()
+                .Select(element => element.GetString())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!)
+                .ToArray()
+            : Array.Empty<string>();
+
+        return new PackagePolicy(locked, prohibited);
+    }
+
+    private static IEnumerable<string> VerifyPackagePolicy(string productDirectory, string productName)
+    {
+        PackagePolicy? policy = null;
+        string? parseError = null;
+        try
+        {
+            policy = ReadPackagePolicy(productDirectory);
+        }
+        catch (JsonException exception)
+        {
+            parseError = exception.Message;
+        }
+
+        if (parseError is not null)
+        {
+            yield return $"package-policy.json is not valid JSON: {parseError}";
+            yield break;
+        }
+
+        if (policy is null)
+        {
+            yield break;
+        }
+
+        var sourceDirectory = Path.Combine(productDirectory, "src");
+        var projectFiles = Directory.Exists(sourceDirectory)
+            ? Directory.EnumerateFiles(sourceDirectory, "*.csproj", SearchOption.AllDirectories).ToArray()
+            : Array.Empty<string>();
+
+        foreach (var project in projectFiles)
+        {
+            var projectText = File.ReadAllText(project);
+            foreach (var prohibited in policy.ProhibitedPackages)
+            {
+                if (projectText.Contains($"Include=\"{prohibited}\"", StringComparison.OrdinalIgnoreCase))
+                {
+                    yield return $"Prohibited package '{prohibited}' is referenced in {project}.";
+                }
+            }
+        }
+
+        if (!policy.LockedRestoreRequired)
+        {
+            yield break;
+        }
+
+        var apiDirectory = Path.Combine(sourceDirectory, $"{productName}.Api");
+        var lockFile = Path.Combine(apiDirectory, "packages.lock.json");
+        if (!File.Exists(lockFile))
+        {
+            yield return $"package-policy.json requires locked restore but packages.lock.json is missing: {lockFile}";
+        }
+
+        var apiProject = Path.Combine(apiDirectory, $"{productName}.Api.csproj");
+        if (File.Exists(apiProject) &&
+            !File.ReadAllText(apiProject).Contains("RestorePackagesWithLockFile", StringComparison.Ordinal))
+        {
+            yield return $"package-policy.json requires locked restore but {productName}.Api.csproj does not set RestorePackagesWithLockFile.";
+        }
+    }
+
+    private static IEnumerable<string> VerifyGuardrailExceptions(string productDirectory)
+    {
+        var path = Path.Combine(productDirectory, "eng", "guardrail-exceptions.json");
+        if (!File.Exists(path))
+        {
+            yield break;
+        }
+
+        JsonElement root = default;
+        string? parseError = null;
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            root = document.RootElement.Clone();
+        }
+        catch (JsonException exception)
+        {
+            parseError = exception.Message;
+        }
+
+        if (parseError is not null)
+        {
+            yield return $"guardrail-exceptions.json is not valid JSON: {parseError}";
+            yield break;
+        }
+
+        if (!root.TryGetProperty("exceptions", out var exceptions) || exceptions.ValueKind != JsonValueKind.Array)
+        {
+            yield return "guardrail-exceptions.json must contain an 'exceptions' array.";
+            yield break;
+        }
+
+        var index = 0;
+        foreach (var exception in exceptions.EnumerateArray())
+        {
+            var label = $"guardrail exception #{index}";
+            index++;
+
+            foreach (var field in new[] { "rule", "module", "reason" })
+            {
+                if (!exception.TryGetProperty(field, out var value) ||
+                    value.ValueKind != JsonValueKind.String ||
+                    string.IsNullOrWhiteSpace(value.GetString()))
+                {
+                    yield return $"{label} is missing required string field '{field}'.";
+                }
+            }
+
+            if (!exception.TryGetProperty("tests", out var tests) ||
+                tests.ValueKind != JsonValueKind.Array ||
+                !tests.EnumerateArray().Any())
+            {
+                yield return $"{label} must list at least one proving test in 'tests'.";
+            }
+
+            if (!exception.TryGetProperty("expires", out var expires) ||
+                expires.ValueKind != JsonValueKind.String ||
+                !DateOnly.TryParse(expires.GetString(), out var expiry))
+            {
+                yield return $"{label} must set an 'expires' date (YYYY-MM-DD).";
+            }
+            else if (expiry < DateOnly.FromDateTime(DateTime.UtcNow.Date))
+            {
+                yield return $"{label} expired on {expiry:yyyy-MM-dd}; renew the evidence or remove the exception.";
+            }
+        }
+    }
+
     private static async Task UpdateModuleFileAsync(string apiDirectory, string productName, string moduleName)
     {
-        var moduleFile = Path.Combine(apiDirectory, "Modules", moduleName, $"{moduleName}Module.cs");
-        var featureDirectories = Directory.GetDirectories(Path.Combine(apiDirectory, "Modules", moduleName))
-            .Select(Path.GetFileName)
+        var moduleDirectory = Path.Combine(apiDirectory, "Modules", moduleName);
+        var moduleFile = Path.Combine(moduleDirectory, $"{moduleName}Module.cs");
+        var features = Directory.GetDirectories(moduleDirectory)
+            .Select(directory => Path.GetFileName(directory)!)
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .OrderBy(name => name, StringComparer.Ordinal)
+            .Select(name => new FeatureRegistration(name, ResolveHandlerType(Path.Combine(moduleDirectory, name), name)))
+            .Where(feature => feature.HandlerType is not null)
             .ToArray();
 
-        await File.WriteAllTextAsync(moduleFile, ModuleFile(productName, moduleName, featureDirectories!));
+        await File.WriteAllTextAsync(moduleFile, ModuleFile(productName, moduleName, features));
     }
+
+    private static string? ResolveHandlerType(string featureDirectory, string featureName)
+    {
+        // Determine command-vs-query from the generated handler file that actually exists,
+        // not from the feature name. The scaffold kind is authoritative.
+        if (File.Exists(Path.Combine(featureDirectory, $"{featureName}CommandHandler.cs")))
+        {
+            return $"{featureName}CommandHandler";
+        }
+
+        if (File.Exists(Path.Combine(featureDirectory, $"{featureName}QueryHandler.cs")))
+        {
+            return $"{featureName}QueryHandler";
+        }
+
+        return null;
+    }
+
+    private readonly record struct FeatureRegistration(string Name, string? HandlerType);
 
     private static async Task<int> RunProcessAsync(string fileName, string arguments, string workingDirectory, TextWriter output, TextWriter error)
     {
@@ -436,13 +749,13 @@ public static class ToolRunner
         """;
     }
 
-    private static string ApiProjectFile(string productName, string? analyzerAssembly)
+    private static string ApiProjectFile(string productName, bool hasAnalyzerPackage)
     {
-        var analyzerReference = analyzerAssembly is null
-            ? string.Empty
-            : $"""
-                <Analyzer Include="{EscapeXml(analyzerAssembly)}" />
-            """;
+        var analyzerReference = hasAnalyzerPackage
+            ? $"""
+                <PackageReference Include="{AnalyzerPackageId}" Version="{AnalyzerPackageVersion}" PrivateAssets="all" />
+            """
+            : string.Empty;
 
         return $$"""
         <Project Sdk="Microsoft.NET.Sdk.Web">
@@ -452,6 +765,7 @@ public static class ToolRunner
             <ImplicitUsings>enable</ImplicitUsings>
             <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
             <WarningsAsErrors>$(WarningsAsErrors);PGB001;PGB006</WarningsAsErrors>
+            <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
           </PropertyGroup>
 
           <ItemGroup>
@@ -462,14 +776,57 @@ public static class ToolRunner
         """;
     }
 
+    private static string NuGetConfigFile()
+    {
+        // Generated products restore the guardrail analyzer from a committed product-local feed,
+        // so the product builds without depending on this template repo or its absolute paths.
+        return """
+        <?xml version="1.0" encoding="utf-8"?>
+        <configuration>
+          <packageSources>
+            <clear />
+            <add key="guardrails-local" value="eng/local-feed" />
+          </packageSources>
+        </configuration>
+        """;
+    }
+
+    private static string EditorConfigFile()
+    {
+        // PGB003 ships as Info (heuristic spike) but is promoted to a build-breaking error inside
+        // generated products, where repository/CRUD wrappers are disallowed by convention.
+        return """
+        root = true
+
+        [*.cs]
+        dotnet_diagnostic.PGB003.severity = error
+        """;
+    }
+
     private static string ErrorFile(string productName)
     {
         return $$"""
         namespace {{productName}}.Abstractions;
 
-        public sealed record Error(string Code, string Message)
+        public enum ErrorType
+        {
+            Failure,
+            Validation,
+            NotFound,
+            Conflict
+        }
+
+        public sealed record Error(string Code, string Message, ErrorType Type = ErrorType.Failure)
         {
             public static Error None { get; } = new(string.Empty, string.Empty);
+
+            public static Error Validation(string code, string message) => new(code, message, ErrorType.Validation);
+
+            public static Error NotFound(string code, string message) => new(code, message, ErrorType.NotFound);
+
+            public static Error Conflict(string code, string message) => new(code, message, ErrorType.Conflict);
+
+            public static Error Failure(string code, string message) => new(code, message, ErrorType.Failure);
         }
         """;
     }
@@ -534,9 +891,11 @@ public static class ToolRunner
         return $$"""
         namespace {{productName}}.Abstractions;
 
+        // Validators are synchronous by design: validation is pure, in-memory request shape
+        // checking. Anything that needs I/O is a business rule for a handler, not a validator.
         public interface IValidator<in TRequest>
         {
-            ValueTask<IReadOnlyList<Error>> ValidateAsync(TRequest request, CancellationToken cancellationToken);
+            IReadOnlyList<Error> Validate(TRequest request);
         }
 
         public static class ValidationResult
@@ -552,6 +911,7 @@ public static class ToolRunner
         using {{productName}}.Api.Modules.{{moduleName}};
 
         var builder = WebApplication.CreateBuilder(args);
+        builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.Add{{moduleName}}Module();
 
         var app = builder.Build();
@@ -572,11 +932,49 @@ public static class ToolRunner
         """;
     }
 
-    private static string ModuleFile(string productName, string moduleName, params string[] features)
+    private static string EndpointResultsFile(string productName)
     {
-        var usings = string.Join(Environment.NewLine, features.Select(feature => $"using {productName}.Api.Modules.{moduleName}.{feature};"));
-        var serviceRegistrations = string.Join(Environment.NewLine, features.Select(feature => $"        services.AddScoped<{feature}{HandlerSuffix(feature)}>();"));
-        var endpointMappings = string.Join(Environment.NewLine, features.Select(feature => $"        endpoints.Map{feature}Endpoint();"));
+        // The single place where Result/Error becomes HTTP. Handlers stay HTTP-free and return
+        // Result<T>; endpoint adapters translate here. Failures become RFC 7807 ProblemDetails with
+        // a status derived from the error type, so the shipped abstractions are actually used.
+        return $$"""
+        using {{productName}}.Abstractions;
+        using Microsoft.AspNetCore.Http;
+
+        namespace {{productName}}.Api.Guardrails;
+
+        internal static class EndpointResults
+        {
+            public static IResult Ok<TValue>(Result<TValue> result) =>
+                result.IsSuccess ? Results.Ok(result.Value) : Problem(result.Error);
+
+            public static IResult Created<TValue>(Result<TValue> result, Func<TValue, string> location) =>
+                result.IsSuccess ? Results.Created(location(result.Value), result.Value) : Problem(result.Error);
+
+            public static IResult Problem(Error error)
+            {
+                var statusCode = error.Type switch
+                {
+                    ErrorType.Validation => StatusCodes.Status400BadRequest,
+                    ErrorType.NotFound => StatusCodes.Status404NotFound,
+                    ErrorType.Conflict => StatusCodes.Status409Conflict,
+                    _ => StatusCodes.Status500InternalServerError
+                };
+
+                return Results.Problem(
+                    title: error.Code,
+                    detail: error.Message,
+                    statusCode: statusCode);
+            }
+        }
+        """;
+    }
+
+    private static string ModuleFile(string productName, string moduleName, params FeatureRegistration[] features)
+    {
+        var usings = string.Join(Environment.NewLine, features.Select(feature => $"using {productName}.Api.Modules.{moduleName}.{feature.Name};"));
+        var serviceRegistrations = string.Join(Environment.NewLine, features.Select(feature => $"        services.AddScoped<{feature.HandlerType}>();"));
+        var endpointMappings = string.Join(Environment.NewLine, features.Select(feature => $"        endpoints.Map{feature.Name}Endpoint();"));
 
         return $$"""
         using Microsoft.AspNetCore.Routing;
@@ -602,18 +1000,6 @@ public static class ToolRunner
         """;
     }
 
-    private static string HandlerSuffix(string featureName)
-    {
-        if (featureName.StartsWith("Get", StringComparison.Ordinal) ||
-            featureName.StartsWith("List", StringComparison.Ordinal) ||
-            featureName.StartsWith("Find", StringComparison.Ordinal))
-        {
-            return "QueryHandler";
-        }
-
-        return "CommandHandler";
-    }
-
     private static string CommandFile(string productName, string moduleName, string featureName)
     {
         return $$"""
@@ -626,13 +1012,15 @@ public static class ToolRunner
     private static string CommandHandlerFile(string productName, string moduleName, string featureName)
     {
         return $$"""
+        using {{productName}}.Abstractions;
+
         namespace {{productName}}.Api.Modules.{{moduleName}}.{{featureName}};
 
         internal sealed class {{featureName}}CommandHandler
         {
-            public Task<Guid> HandleAsync({{featureName}}Command command, CancellationToken cancellationToken)
+            public Task<Result<Guid>> HandleAsync({{featureName}}Command command, CancellationToken cancellationToken)
             {
-                return Task.FromResult(Guid.NewGuid());
+                return Task.FromResult(Result.Success(Guid.NewGuid()));
             }
         }
         """;
@@ -662,8 +1050,8 @@ public static class ToolRunner
                 {{featureName}}CommandHandler handler,
                 CancellationToken cancellationToken)
             {
-                var id = await handler.HandleAsync(command, cancellationToken);
-                return Results.Created($"/{{route}}/{id}", new { id });
+                var result = await handler.HandleAsync(command, cancellationToken);
+                return EndpointResults.Created(result, id => $"/{{route}}/{id}");
             }
         }
         """;
@@ -683,13 +1071,15 @@ public static class ToolRunner
     private static string QueryHandlerFile(string productName, string moduleName, string featureName)
     {
         return $$"""
+        using {{productName}}.Abstractions;
+
         namespace {{productName}}.Api.Modules.{{moduleName}}.{{featureName}};
 
         internal sealed class {{featureName}}QueryHandler
         {
-            public Task<{{featureName}}Response> HandleAsync({{featureName}}Query query, CancellationToken cancellationToken)
+            public Task<Result<{{featureName}}Response>> HandleAsync({{featureName}}Query query, CancellationToken cancellationToken)
             {
-                return Task.FromResult(new {{featureName}}Response(query.Id, "sample"));
+                return Task.FromResult(Result.Success(new {{featureName}}Response(query.Id, "sample")));
             }
         }
         """;
@@ -718,8 +1108,8 @@ public static class ToolRunner
                 {{featureName}}QueryHandler handler,
                 CancellationToken cancellationToken)
             {
-                var response = await handler.HandleAsync(new {{featureName}}Query(id), cancellationToken);
-                return Results.Ok(response);
+                var result = await handler.HandleAsync(new {{featureName}}Query(id), cancellationToken);
+                return EndpointResults.Ok(result);
             }
         }
         """;
@@ -742,6 +1132,8 @@ public static class ToolRunner
     private static string WeatherQueryHandlerFile(string productName, string moduleName, string featureName)
     {
         return $$"""
+        using {{productName}}.Abstractions;
+
         namespace {{productName}}.Api.Modules.{{moduleName}}.{{featureName}};
 
         internal sealed class {{featureName}}QueryHandler
@@ -760,16 +1152,26 @@ public static class ToolRunner
                 "Scorching"
             ];
 
-            public Task<IReadOnlyList<WeatherForecast>> HandleAsync({{featureName}}Query query, CancellationToken cancellationToken)
+            private readonly TimeProvider _timeProvider;
+
+            public {{featureName}}QueryHandler(TimeProvider timeProvider)
             {
+                _timeProvider = timeProvider;
+            }
+
+            public Task<Result<IReadOnlyList<WeatherForecast>>> HandleAsync({{featureName}}Query query, CancellationToken cancellationToken)
+            {
+                // Time comes from the injected TimeProvider, never the ambient system clock, and the
+                // sample values are derived deterministically rather than from ambient randomness.
+                var today = DateOnly.FromDateTime(_timeProvider.GetUtcNow().UtcDateTime);
                 var forecasts = Enumerable.Range(1, 5)
                     .Select(index => new WeatherForecast(
-                        DateOnly.FromDateTime(DateTime.UtcNow.AddDays(index)),
-                        Random.Shared.Next(-20, 55),
-                        Summaries[Random.Shared.Next(Summaries.Length)]))
+                        today.AddDays(index),
+                        -20 + (index * 13 % 75),
+                        Summaries[index % Summaries.Length]))
                     .ToArray();
 
-                return Task.FromResult<IReadOnlyList<WeatherForecast>>(forecasts);
+                return Task.FromResult(Result.Success<IReadOnlyList<WeatherForecast>>(forecasts));
             }
         }
         """;
@@ -795,10 +1197,75 @@ public static class ToolRunner
                 {{featureName}}QueryHandler handler,
                 CancellationToken cancellationToken)
             {
-                var response = await handler.HandleAsync(new {{featureName}}Query(), cancellationToken);
-                return Results.Ok(response);
+                var result = await handler.HandleAsync(new {{featureName}}Query(), cancellationToken);
+                return EndpointResults.Ok(result);
             }
         }
+        """;
+    }
+
+    private static string AgentsFile(string productName, string moduleName)
+    {
+        return $$"""
+        # AGENTS.md
+
+        Daily contract for anyone (human or AI) changing {{productName}}. Read this before writing code.
+
+        ## Architecture
+
+        - Modular monolith inside a single `{{productName}}.Api` assembly. Modules are folders under
+          `src/{{productName}}.Api/Modules/<Module>`, each a vertical slice of features.
+        - This is a deliberate single-assembly choice. Because there are no compiler-enforced
+          assembly boundaries, the guardrail analyzers and `verify` are the boundary enforcement.
+          Do not weaken them to take a shortcut.
+        - `{{productName}}.Abstractions` holds shared `Result`, `Error`, and `IValidator`. It must not
+          depend on the API project.
+
+        ## Module rules
+
+        - Only the `<Module>Module.cs` facade is public. Every feature type (command, query, handler,
+          endpoint, record) is `internal`. `verify` fails if a non-facade module type is public.
+        - A feature is a folder with a command/query, its handler, and an endpoint adapter.
+        - Scaffold features with the tool, never by hand-copying:
+          - `new-feature --product . --module {{moduleName}} --kind command --name CreateThing`
+          - `new-feature --product . --module {{moduleName}} --kind query --name GetThing`
+
+        ## Guardrails (enforced by analyzers, build-breaking)
+
+        - **PGB001** Query handlers must not mutate EF Core state: no `Add/Update/Remove/SaveChanges`,
+          no `ExecuteUpdate/ExecuteDelete/ExecuteSql*`, no `Entry(x).State = ...`. Writes belong in
+          command handlers.
+        - **PGB006** Route mapping (`MapGet/MapPost/...`) must live inside a type/method marked
+          `[EndpointAdapter]`, and an endpoint may inject only bound request data, a
+          `CancellationToken`, and one typed command/query handler. No `HttpContext`, `IConfiguration`,
+          `DbContext`, `ClaimsPrincipal`, `IMediator`, etc.
+        - **PGB003** No repository/CRUD/unit-of-work persistence wrappers (generic or hand-written).
+          Promoted to error in this product via `.editorconfig`. Use explicit business capabilities.
+
+        ## Conventions
+
+        - Get time from the injected `TimeProvider`, never `DateTime.UtcNow`/`Now`. Avoid `Random.Shared`
+          and other ambient statics in handlers.
+        - Validators (`IValidator<T>`) are synchronous and pure. I/O is a handler concern.
+        - Return `Result`/`Result<T>` from handlers and translate at the endpoint edge.
+
+        ## Packages
+
+        - `eng/package-policy.json` is enforced by `verify`: prohibited packages fail the build and
+          locked restore (`packages.lock.json`) is required. Commit the lock file.
+        - New provider SDKs, brokers, caches, observability exporters, and background-job libraries
+          require an explicit decision record before they are added.
+
+        ## Guardrail exceptions
+
+        - Exceptions are rare, local, and temporary. Record them in `eng/guardrail-exceptions.json`
+          with `rule`, `module`, `reason`, `tests`, and an `expires` date. `verify` fails on an
+          expired or incomplete exception. Never weaken a rule globally.
+
+        ## Before you say it works
+
+        - Run `verify --product .` (structure checks + analyzer-enabled build + locked restore).
+        - Verification output is the evidence. Do not claim green without it.
         """;
     }
 
@@ -856,13 +1323,29 @@ public static class ToolRunner
 
         Guardrail exceptions are rare, local, and temporary by default.
 
-        Required evidence:
+        Required evidence (enforced by `verify` against `eng/guardrail-exceptions.json`):
 
-        - Rule id or protected asset.
-        - Owning module.
-        - Reason the normal shape cannot work.
-        - Tests proving the exception remains safe.
-        - Expiry or review condition.
+        - `rule`: rule id or protected asset.
+        - `module`: owning module.
+        - `reason`: why the normal shape cannot work.
+        - `tests`: at least one test proving the exception remains safe.
+        - `expires`: review/expiry date (`YYYY-MM-DD`). `verify` fails once this date passes.
+
+        Example entry:
+
+        ```json
+        {
+          "exceptions": [
+            {
+              "rule": "PGB003",
+              "module": "Billing",
+              "reason": "Third-party SDK requires a thin persistence wrapper.",
+              "tests": ["BillingRepositoryBoundaryTests"],
+              "expires": "2026-12-31"
+            }
+          ]
+        }
+        ```
 
         Do not weaken an analyzer or architecture rule globally to unblock one feature.
         """;
@@ -935,14 +1418,6 @@ public static class ToolRunner
           ]
         }
         """;
-    }
-
-    private static string EscapeXml(string value)
-    {
-        return value.Replace("&", "&amp;", StringComparison.Ordinal)
-            .Replace("\"", "&quot;", StringComparison.Ordinal)
-            .Replace("<", "&lt;", StringComparison.Ordinal)
-            .Replace(">", "&gt;", StringComparison.Ordinal);
     }
 
     private static string ToKebabCase(string value)

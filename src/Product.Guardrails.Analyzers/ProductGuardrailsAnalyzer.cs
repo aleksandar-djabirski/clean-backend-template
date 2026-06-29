@@ -24,6 +24,22 @@ public sealed class ProductGuardrailsAnalyzer : DiagnosticAnalyzer
         "Update",
         "UpdateRange");
 
+    // Bulk and raw-SQL mutations are exposed as EF Core extension methods whose containing
+    // type is RelationalQueryableExtensions / RelationalDatabaseFacadeExtensions, not a
+    // DbContext/DbSet. They are recognized by method name within the EF Core namespace.
+    private static readonly ImmutableHashSet<string> EfExtensionMutationMethods = ImmutableHashSet.Create(
+        StringComparer.Ordinal,
+        "ExecuteDelete",
+        "ExecuteDeleteAsync",
+        "ExecuteUpdate",
+        "ExecuteUpdateAsync",
+        "ExecuteSql",
+        "ExecuteSqlAsync",
+        "ExecuteSqlRaw",
+        "ExecuteSqlRawAsync",
+        "ExecuteSqlInterpolated",
+        "ExecuteSqlInterpolatedAsync");
+
     private static readonly ImmutableHashSet<string> RouteMappingMethods = ImmutableHashSet.Create(
         StringComparer.Ordinal,
         "MapGet",
@@ -71,6 +87,7 @@ public sealed class ProductGuardrailsAnalyzer : DiagnosticAnalyzer
         context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
         context.EnableConcurrentExecution();
         context.RegisterSyntaxNodeAction(AnalyzeInvocation, SyntaxKind.InvocationExpression);
+        context.RegisterSyntaxNodeAction(AnalyzeAssignment, SyntaxKind.SimpleAssignmentExpression);
         context.RegisterSymbolAction(AnalyzeNamedType, SymbolKind.NamedType);
     }
 
@@ -98,7 +115,7 @@ public sealed class ProductGuardrailsAnalyzer : DiagnosticAnalyzer
             return;
         }
 
-        if (!EfMutationMethods.Contains(method.Name) || !IsEfPersistenceType(method.ContainingType))
+        if (!IsEfMutation(method))
         {
             return;
         }
@@ -110,6 +127,42 @@ public sealed class ProductGuardrailsAnalyzer : DiagnosticAnalyzer
             method.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat));
 
         context.ReportDiagnostic(diagnostic);
+    }
+
+    private static bool IsEfMutation(IMethodSymbol method)
+    {
+        if (EfMutationMethods.Contains(method.Name) && IsEfPersistenceType(method.ContainingType))
+        {
+            return true;
+        }
+
+        return EfExtensionMutationMethods.Contains(method.Name) && IsEfCoreNamespace(method.ContainingType);
+    }
+
+    private static void AnalyzeAssignment(SyntaxNodeAnalysisContext context)
+    {
+        var containingType = context.ContainingSymbol?.ContainingType;
+        if (containingType is null || !IsQueryHandler(containingType))
+        {
+            return;
+        }
+
+        var assignment = (AssignmentExpressionSyntax)context.Node;
+        if (context.SemanticModel.GetSymbolInfo(assignment.Left, context.CancellationToken).Symbol is not IPropertySymbol property)
+        {
+            return;
+        }
+
+        // Setting EntityEntry.State (e.g. _db.Entry(x).State = EntityState.Deleted) is a
+        // change-tracker mutation that bypasses the Add/Update/Remove APIs.
+        if (property.Name == "State" && IsEntityEntryType(property.ContainingType))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(
+                DiagnosticDescriptors.QueryEfMutation,
+                assignment.GetLocation(),
+                containingType.Name,
+                "EntityEntry.State"));
+        }
     }
 
     private static void AnalyzeEndpointRouteMapping(
@@ -202,7 +255,7 @@ public sealed class ProductGuardrailsAnalyzer : DiagnosticAnalyzer
     {
         var type = (INamedTypeSymbol)context.Symbol;
 
-        if (LooksLikeGenericPersistenceWrapper(type))
+        if (LooksLikePersistenceWrapper(type))
         {
             context.ReportDiagnostic(Diagnostic.Create(
                 DiagnosticDescriptors.GenericPersistenceWrapper,
@@ -211,13 +264,16 @@ public sealed class ProductGuardrailsAnalyzer : DiagnosticAnalyzer
         }
     }
 
-    private static bool LooksLikeGenericPersistenceWrapper(INamedTypeSymbol type)
+    private static bool LooksLikePersistenceWrapper(INamedTypeSymbol type)
     {
-        if (type.TypeParameters.Length == 0)
+        if (type.TypeKind is not (TypeKind.Class or TypeKind.Struct) || type.IsStatic)
         {
             return false;
         }
 
+        // Both generic (Repository<T>) and hand-written non-generic (OrderRepository) wrappers
+        // are in scope. The signal is an EF dependency plus either a wrapper-ish name or a
+        // cluster of CRUD members.
         var explicitlyNamed = ContainsAny(type.Name, "Repository", "UnitOfWork", "CrudService", "GenericService");
         var hasEfDependency = type.GetMembers()
             .OfType<IMethodSymbol>()
@@ -288,6 +344,21 @@ public sealed class ProductGuardrailsAnalyzer : DiagnosticAnalyzer
         }
 
         return false;
+    }
+
+    private static bool IsEfCoreNamespace(ISymbol? symbol)
+    {
+        var namespaceName = symbol?.ContainingNamespace?.ToDisplayString();
+        return namespaceName is not null &&
+               (namespaceName == "Microsoft.EntityFrameworkCore" ||
+                namespaceName.StartsWith("Microsoft.EntityFrameworkCore.", StringComparison.Ordinal));
+    }
+
+    private static bool IsEntityEntryType(ITypeSymbol type)
+    {
+        var fullName = type.OriginalDefinition.ToDisplayString();
+        return fullName == "Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry" ||
+               fullName.StartsWith("Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry<", StringComparison.Ordinal);
     }
 
     private static bool IsForbiddenEndpointDependency(ITypeSymbol type)

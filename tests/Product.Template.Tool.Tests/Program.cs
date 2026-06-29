@@ -45,10 +45,13 @@ static async Task RunBaselineCommandQuerySmoke(string root)
     // Portability: the analyzer must come from a committed product-local NuGet feed referenced
     // by PackageReference, never an absolute path into this template's bin output.
     AssertFile(Path.Combine(product, "nuget.config"));
+    AssertContains(Path.Combine(product, "nuget.config"), "eng/local-feed");
+    AssertContains(Path.Combine(product, "nuget.config"), "https://api.nuget.org/v3/index.json");
     AssertFile(Path.Combine(product, ".editorconfig"));
     AssertFile(Path.Combine(product, "eng", "local-feed", "Product.Guardrails.Analyzers.0.1.0.nupkg"));
     var apiProject = Path.Combine(product, "src", "SampleProduct.Api", "SampleProduct.Api.csproj");
     AssertContains(apiProject, "<PackageReference Include=\"Product.Guardrails.Analyzers\"");
+    AssertContains(apiProject, "<WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900</WarningsNotAsErrors>");
     AssertNotContains(apiProject, "<Analyzer Include=");
     AssertNotContains(apiProject, "bin");
 

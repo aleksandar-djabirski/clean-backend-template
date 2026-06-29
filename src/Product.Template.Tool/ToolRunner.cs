@@ -765,6 +765,7 @@ public static class ToolRunner
             <ImplicitUsings>enable</ImplicitUsings>
             <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
             <WarningsAsErrors>$(WarningsAsErrors);PGB001;PGB006</WarningsAsErrors>
+            <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900</WarningsNotAsErrors>
             <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
           </PropertyGroup>
 
@@ -786,6 +787,7 @@ public static class ToolRunner
           <packageSources>
             <clear />
             <add key="guardrails-local" value="eng/local-feed" />
+            <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
           </packageSources>
         </configuration>
         """;

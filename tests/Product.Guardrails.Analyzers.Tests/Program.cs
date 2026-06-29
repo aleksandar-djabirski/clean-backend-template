@@ -13,6 +13,7 @@ var tests = new (string Name, Action Body)[]
     ("PGB006 allows endpoint adapters with one typed handler", Pgb006AllowsValidEndpoint),
     ("PGB006 blocks route mappings outside endpoint adapters", Pgb006BlocksRouteMappingOutsideAdapter),
     ("PGB006 blocks forbidden endpoint dependencies", Pgb006BlocksForbiddenDependencies),
+    ("PGB003 allows EF-backed business types that are not CRUD wrappers", Pgb003AllowsEfBackedBusinessType),
     ("PGB003 flags explicit generic repository wrappers", Pgb003FlagsGenericRepository),
     ("PGB003 flags hand-written non-generic repository wrappers", Pgb003FlagsNonGenericRepository),
 };
@@ -178,6 +179,22 @@ static void Pgb003FlagsGenericRepository()
         """);
 
     AssertDiagnosticCount(diagnostics, "PGB003", 1);
+}
+
+static void Pgb003AllowsEfBackedBusinessType()
+{
+    var diagnostics = Analyze(FixtureStubs() + """
+        internal sealed class RequestWorkflow
+        {
+            private readonly Microsoft.EntityFrameworkCore.DbContext _db = new();
+
+            public void Submit(object request) { }
+            public void Approve(System.Guid requestId) { }
+            public void Reject(System.Guid requestId) { }
+        }
+        """);
+
+    AssertNoDiagnostic(diagnostics, "PGB003");
 }
 
 static void Pgb003FlagsNonGenericRepository()

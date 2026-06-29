@@ -1,8 +1,8 @@
 .dotnet/
 .dotnet-home/
-.localtmp/
+.localtmp*/
 .tmp/
-.nuget/
+.nuget*/
 .DS_Store
 .vs/
 .vscode/

@@ -1,0 +1,5 @@
+{
+  "lockedRestoreRequired": true,
+  "prohibitedPackages": [ "Microsoft.EntityFrameworkCore.Proxies" ],
+  "requiresDecisionRecord": [ "provider SDKs", "observability exporters", "message brokers", "background jobs", "caching providers" ]
+}

@@ -1,175 +1,79 @@
 # Clean Backend Template
 
-This repository is a reusable backend template for SaaS products built on .NET 10.
-
-The goal is not to automate every architecture or business decision. The goal is to automate structural mistakes that tools can reliably catch, then make semantic risks visible through ownership evidence, focused tests, review, and narrow human decisions only where judgment is unavoidable.
-
-The template is considered useful only when a fresh generated product can prove the real path:
-
-```text
-bootstrap product
--> scaffold a command and query
--> build with analyzers enabled
--> run analyzer fixtures
--> run generated-product verification
--> pass CI
-```
-
-## Current Status
-
-Phase 0 is implemented as the feasibility gate:
-
-- `Product.Guardrails.Analyzers` implements `PGB001`, `PGB006`, and a `PGB003` spike, and is
-  packaged as a NuGet analyzer so generated products reference it portably (see Architecture).
-  - `PGB001` covers direct EF mutation APIs (`Add`/`Update`/`Remove`/`SaveChanges`), bulk and
-    raw-SQL extensions (`ExecuteUpdate`/`ExecuteDelete`/`ExecuteSql*`), and `Entry(x).State = ...`.
-  - `PGB003` detects both generic (`Repository<T>`) and hand-written non-generic repository/CRUD
-    wrappers. It ships as `Info` (heuristic spike) but is promoted to a build-breaking error inside
-    generated products via `.editorconfig`.
-- `Product.Template.Tool` implements `bootstrap`, `new-feature`, and `verify`. `--kind` (not the
-  feature name) drives command-vs-query registration.
-- Analyzer fixtures prove passing and failing cases for every rule.
-- Generated-product smoke tests create disposable products, scaffold command/query/weather
-  features, build under the real analyzers, and verify them — including portability, kind-based
-  registration, the package policy, guardrail-exception expiry, and the module boundary gate.
-- CI runs the same practical path instead of checking only that files exist.
-
-The minimal Phase 1 baseline is also scaffolded:
-
-- `Product.Abstractions` provides shared `Result`, typed `Error`/`ErrorType`, and synchronous `IValidator` conventions.
-- Generated products include an `{Product}.Abstractions` project and an API project reference to it.
-- Scaffolded handlers return `Result<T>` and stay HTTP-free; endpoint adapters translate at the edge through `EndpointResults`, mapping failures to RFC 7807 `ProblemDetails` with a status derived from the error type. The shipped `Result`/`Error` abstractions are actually exercised, not dead code.
-- Generated products include an `AGENTS.md` contract, a module facade, ownership map, module capability map, guardrail exception skeleton, package policy, migration safety profile, and vendor-neutral observability baseline.
-- `verify` checks required Phase 1 files, the analyzer package reference, abstractions reference, module facades, unresolved placeholders, internal-by-default module implementation types, the package policy (prohibited packages + locked restore with a committed `packages.lock.json`), and guardrail-exception validity (schema + expiry).
-- The reference `weather-query` feature obeys the template's own conventions: time comes from an injected `TimeProvider` and sample values are deterministic (no `DateTime.UtcNow`, no `Random.Shared`).
-- The smoke tests have two named generated-product paths: the baseline command/query smoke path, and a Phase 3 candidate `weather-query` smoke fixture. Weather is a mechanical reference fixture similar in spirit to a framework weather sample; it is not product business logic and does not prove Phase 2 product usefulness or Phase 3 readiness.
-
-Target SDK and framework are pinned to .NET `10.0.301` and `net10.0`.
-
-The repo uses `.slnx` because .NET 10 makes it the default solution format. It is smaller, XML-based, easier to diff, and avoids legacy `.sln` noise. If a downstream tool cannot handle `.slnx`, that compatibility problem should be explicit rather than silently carrying two solution files.
-
-## Why This Shape
-
-The template is for repeated SaaS/client/product work, not a one-off prototype. The permanent baseline must stay economically sustainable for a solo developer.
-
-A guardrail belongs in the baseline only when it prevents a serious or recurring failure, is deterministic enough to avoid routine false positives, has tests for violations and valid boundary cases, and proves itself in generated-product smoke tests and real reference work.
-
-That is why Phase 0 is deliberately small. It proves the machinery before adding more policy:
-
-- `PGB001` blocks direct EF Core mutations from query handlers without pretending to detect every indirect write.
-- `PGB006` keeps route mappings in explicit endpoint adapters and blocks dangerous direct endpoint dependencies.
-- `PGB003` is only a feasibility spike for obvious generic repository/CRUD wrappers. It must not be treated as semantic proof.
-- The generated sample module is disposable verification material, not product business logic.
-
-## Architecture: Single-Assembly Modular Monolith
-
-This is a deliberate decision, stated out loud because it changes how boundaries are enforced.
-
-Generated products are a **modular monolith inside one `{Product}.Api` assembly**. Modules are
-folders (`Modules/<Module>/<Feature>`), not separate projects. There is no compiler-enforced
-boundary between modules, and the API host can technically see every module's types.
-
-The alternative — one real project/assembly per module with `internal` surfaces enforced by the
-compiler — is stronger but heavier to generate, build, and maintain. For solo/client SaaS work the
-single-assembly shape is the chosen trade-off.
-
-Because the strongest enforcement tier (assembly boundaries) is intentionally absent, the
-boundaries are held by:
-
-- The guardrail analyzers (`PGB001`, `PGB003`, `PGB006`), which are symbol-based and build-breaking.
-- A `verify` boundary gate that asserts only the `<Module>Module` facade is public and every other
-  feature type is `internal`. It strips comments and string literals before scanning, so it matches
-  real declarations rather than the word "public" in prose, and is independent of modifier order.
-
-This gate is lexical, not a full compiler check — it is a backstop for the analyzers, not a
-replacement for assembly boundaries. If a product later needs true assembly isolation, splitting a
-module into its own project is the documented escalation, not a silent assumption.
-
-## Portability
-
-A generated product must build off this machine, with no path back into this template repo. The
-guardrail analyzer is therefore packed as a NuGet package into a product-local feed
-(`eng/local-feed`) and referenced by `PackageReference` (`PrivateAssets="all"`) through a generated
-`nuget.config`. The product also commits `packages.lock.json` and restores in locked mode. There
-are no absolute analyzer paths in any generated project.
-
-## What Not To Add Yet
-
-Do not add more analyzers, OpenAPI compatibility tooling, query-count helpers, migration compatibility fixtures, outbox/broker/caching integrations, distributed tracing exporters, or special HTTP endpoint categories until a real product need or feasibility spike justifies them.
-
-OpenTelemetry is useful, but the baseline starts with vendor-neutral .NET observability conventions: `Activity`, W3C trace context, correlation IDs, structured request-completion logging, health endpoints, and safe error trace identifiers. Do not add OpenTelemetry packages/exporters until a product chooses an observability destination or a later feasibility spike proves the SDK integration belongs in the reusable baseline.
-
-## Verify
-
-Use the workspace-local SDK:
+This repository is a reusable .NET 10 SaaS backend baseline. The canonical start path is now a real, runnable, rename-only static template:
 
 ```bash
-./.dotnet/dotnet build src/Product.Guardrails.Analyzers/Product.Guardrails.Analyzers.csproj --nologo
+dotnet new install ./template
+dotnet new clean-backend --name My.Product --output ../My.Product
+cd ../My.Product
+dotnet restore src/My.Product.Api/My.Product.Api.csproj --locked-mode
+dotnet run --project eng/My.Product.Verify/My.Product.Verify.csproj -- --product .
+```
+
+The custom `Product.Template.Tool bootstrap` command remains only for backward-compatible smoke coverage and convenience. It is not required before a product can begin. `new-feature` remains optional scaffolding and fails rather than silently overwriting existing feature files.
+
+## What the Template Proves
+
+The static template under `template/` is isolated from this repository's development projects. It contains generated-product source only: API, copied runtime abstractions, tests, product-local verification, local analyzer feed, package policy, guardrail exception skeleton, ownership/module capability documentation, and generated-product documentation.
+
+The reference Weather endpoint is intentionally mechanical. It exercises:
+
+- copied `Result`, `Error`, `IValidator`-style runtime conventions;
+- explicit endpoint adapters;
+- endpoint result/error mapping;
+- generated-product tests;
+- analyzer-enabled builds and product-local verification.
+
+It does **not** prove persistence, migrations, tenancy, authorization, integrations, true business correctness, production readiness, or absence of indirect writes.
+
+## Guardrails
+
+`Product.Guardrails.Analyzers` builds the analyzer source, but the external NuGet package identity is stable and neutral: `CleanBackend.Guardrails.Analyzers`. Generated products reference it by pinned `PackageReference` with `PrivateAssets="all"` from `eng/local-feed`.
+
+- `PGB001` blocks direct EF Core mutation APIs in query handlers.
+- `PGB006` keeps route mappings in endpoint adapters and blocks forbidden direct endpoint dependencies.
+- `PGB003` is a heuristic repository/CRUD-wrapper detector. It remains visible at analyzer-default Info severity and is not build-breaking by default, including under `TreatWarningsAsErrors`.
+
+Analyzers enforce only this limited structural set. They do not prove business correctness, authorization correctness, absence of indirect writes, true module isolation, or absence of duplicate business logic.
+
+## Runtime Abstractions
+
+Runtime abstractions are deliberately copied into each generated product as source: `Result`, `Result<T>`, `Error`, `ErrorType`, `IValidator`, and endpoint-result mapping. They are behavioral contracts, not shared runtime packages. Centralizing them now would risk creating a premature mini-framework. Copy first; extract later only after multiple real products prove stability.
+
+## Portability and Package Maintenance
+
+Generated products use a product-local feed (`eng/local-feed`) plus `nuget.org` in `nuget.config`. There are no absolute paths back to this repository.
+
+The committed analyzer `.nupkg` and `src/Product.Api/packages.lock.json` in `template/` are a matched pair. Locked restore validates package content hashes. When analyzer package content changes:
+
+1. bump the analyzer package version;
+2. pack the analyzer;
+3. replace the template local-feed package;
+4. regenerate the template lock file against that exact package;
+5. commit both together.
+
+A package ID/version is immutable. Do not replace same-version package content in a generated product. A shared analyzer feed and deliberate per-product analyzer upgrade workflow are deferred until Product #2 exists.
+
+## Architecture
+
+Generated products are single-assembly modular monoliths. Modules are folders under the API project unless a product deliberately escalates a module into its own project. Verification and analyzers are backstops, not true compiler-enforced isolation.
+
+Verification remains product-local (`eng/<Product>.Verify`) until its layout assumptions stabilize. It checks required files, analyzer package reference, module facade/public-type conventions, package policy, lock file presence, unresolved placeholders, and guardrail exception validity/expiry.
+
+## Verify This Repository
+
+Use the workspace-local SDK if present, otherwise a system `dotnet` SDK pinned to `10.0.301` by `global.json`:
+
+```bash
 ./.dotnet/dotnet build src/Product.Abstractions/Product.Abstractions.csproj --nologo
+./.dotnet/dotnet build src/Product.Guardrails.Analyzers/Product.Guardrails.Analyzers.csproj --nologo
 ./.dotnet/dotnet build src/Product.Template.Tool/Product.Template.Tool.csproj --nologo
 ./.dotnet/dotnet run --project tests/Product.Guardrails.Analyzers.Tests/Product.Guardrails.Analyzers.Tests.csproj
 ./.dotnet/dotnet run --project tests/Product.Template.Tool.Tests/Product.Template.Tool.Tests.csproj
 ```
 
-If using a machine-level SDK, the same commands work with `dotnet` when SDK `10.0.301` is installed.
+CI also installs `template/`, creates a non-`Product` generated product, clears the NuGet cache for the analyzer, restores locked mode immediately, builds, runs generated tests, runs product-local verification, searches for this repository's absolute path, and checks that no `bin/` or `obj/` directories were copied.
 
-## Phase Direction
+## Deferred Until the First Real Product
 
-Phase 1 has added only the core baseline pieces that are cheap and mechanically verifiable:
-
-- `Product.Abstractions`
-- module facade conventions
-- ownership and module capability maps
-- Result and Error conventions
-- validation wrapper
-- package policy
-- architecture verification
-- guardrail exception mechanism
-- vendor-neutral observability baseline skeleton
-- migration safety policy skeleton
-
-Do not continue straight into every later control. The in-memory Weather endpoint is useful as a generated reference feature, but it is not enough to enter Phase 3. Phase 2 is first real product validation. Phase 3 is admission-controlled expansion. Phase 4 is periodic sustainability review.
-
-## Phase 3 Candidate Smoke Fixture
-
-The generated `weather-query` feature is the current Phase 3 candidate smoke fixture. It proves that the tool can create and verify a small read-only in-memory endpoint shape beyond the baseline command/query path.
-
-It proves mechanics only:
-
-- `new-feature --kind weather-query` generates endpoint, query, handler, and response records.
-- The generated endpoint stays inside an explicit endpoint adapter.
-- The generated product still builds with guardrail analyzers enabled.
-- `verify` still passes on the generated output.
-
-It does not prove Phase 3 admission:
-
-- It has no persistence, migration, provider, external API, background workflow, caching, OpenTelemetry exporter, special HTTP category, ownership ambiguity, or production performance pressure.
-- It must not be used as evidence that Phase 3 controls belong in the permanent baseline.
-- Phase 3 still requires real product pressure or repeated reference work before adding durable controls.
-
-## Phase 3 Backlog
-
-Phase 3 items are not assumed to belong in every SaaS product. They stay out of the default baseline until a real product or repeated reference work proves the control prevents more cost than it creates.
-
-Candidate controls:
-
-- Persistence and schema evolution profile: choose EF migrations, SQL migrations, an external migrator, managed-service schema setup, or no database. Every persistent product should make this decision explicitly, but the template should not force EF migrations as the only approach.
-- Migration compatibility fixtures: add when a product has persistent data and needs rolling-compatible deployments, destructive transformations, or prior-schema upgrade tests.
-- Query-count helpers: add when real collection/dashboard endpoints risk N+1 queries or excessive database round trips.
-- OpenAPI/API compatibility tooling: add when external clients depend on stable HTTP contracts.
-- Specialized HTTP endpoint categories: add when real products need uploads, downloads, streaming responses, ETags, cacheable representations, or server-sent events.
-- Provider-specific guardrails: add after selecting real providers such as PostgreSQL, SQL Server, Redis, object storage, auth providers, payment providers, or email providers.
-- Outbox, broker, and background-job conventions: add when a real workflow needs reliable asynchronous side effects.
-- Caching conventions: add only after measured or expected performance pressure justifies cache invalidation complexity.
-- OpenTelemetry packages/exporters: add when a product chooses a telemetry backend or needs cross-process trace collection beyond built-in .NET primitives.
-- API compatibility, package compatibility, or binary compatibility checks: add only when the project has consumers that make compatibility a real risk.
-- Promotion or retirement of `PGB003`: decide after real reference code shows whether generic repository/CRUD-wrapper detection has high signal and low false positives.
-
-Admission criteria:
-
-- A real product need or repeated failure exists.
-- A feasibility spike proves the control is deterministic enough.
-- Tests prove both violation and valid boundary cases.
-- Generated-product smoke tests and CI exercise the control.
-- Documentation and scaffolding are updated together.
-- The maintenance cost is lower than the failure cost it prevents.
+The next meaningful validation is one real database-backed vertical slice in Product #1 after that product makes real provider, auth, and tenancy decisions. Do not add EF Core, database providers, migrations, authentication providers, tenancy implementation, brokers, outbox, background jobs, caches, OpenTelemetry exporters, API-versioning tooling, or new analyzer rules to the generic template without real evidence.

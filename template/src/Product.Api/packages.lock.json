@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "CleanBackend.Guardrails.Analyzers": {
+        "type": "Direct",
+        "requested": "[0.1.0, )",
+        "resolved": "0.1.0",
+        "contentHash": "REGENERATE_WITH_COMMITTED_NUPKG"
+      }
+    }
+  }
+}

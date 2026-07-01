@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  phase-0:
+  clean-backend:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,5 +20,35 @@ jobs:
         run: dotnet build src/Product.Template.Tool/Product.Template.Tool.csproj --nologo
       - name: Analyzer fixtures
         run: dotnet run --project tests/Product.Guardrails.Analyzers.Tests/Product.Guardrails.Analyzers.Tests.csproj
-      - name: Generated product smoke test
+      - name: Legacy generator smoke test
         run: dotnet run --project tests/Product.Template.Tool.Tests/Product.Template.Tool.Tests.csproj
+      - name: Static template smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet new install ./template
+          WORK="$(mktemp -d)"
+          dotnet new clean-backend --name Acme.Tickets --output "$WORK/Acme.Tickets"
+          test -f "$WORK/Acme.Tickets/src/Acme.Tickets.Api/Acme.Tickets.Api.csproj"
+          test -f "$WORK/Acme.Tickets/eng/local-feed/CleanBackend.Guardrails.Analyzers.0.1.0.nupkg"
+          dotnet nuget locals http-cache --clear
+          GLOBAL_PACKAGES="$(dotnet nuget locals global-packages --list | sed 's/^global-packages: //')"
+          rm -rf "$GLOBAL_PACKAGES/cleanbackend.guardrails.analyzers/0.1.0"
+          dotnet restore "$WORK/Acme.Tickets/src/Acme.Tickets.Api/Acme.Tickets.Api.csproj" --locked-mode
+          dotnet build "$WORK/Acme.Tickets/src/Acme.Tickets.Api/Acme.Tickets.Api.csproj" --no-restore --nologo
+          dotnet run --project "$WORK/Acme.Tickets/tests/Acme.Tickets.Api.Tests/Acme.Tickets.Api.Tests.csproj"
+          dotnet run --project "$WORK/Acme.Tickets/eng/Acme.Tickets.Verify/Acme.Tickets.Verify.csproj" -- --product "$WORK/Acme.Tickets"
+          if rg -F "${{ github.workspace }}" "$WORK/Acme.Tickets"; then exit 1; fi
+          if find "$WORK/Acme.Tickets" -type d \( -name bin -o -name obj \) | grep .; then exit 1; fi
+          mkdir -p "$WORK/Acme.Tickets/src/Acme.Tickets.Api/Modules/Weather/Pgb003Probe"
+          cat > "$WORK/Acme.Tickets/src/Acme.Tickets.Api/Modules/Weather/Pgb003Probe/RepositoryProbe.cs" <<'CS'
+          namespace Acme.Tickets.Api.Modules.Weather.Pgb003Probe;
+          internal sealed class OrderRepository
+          {
+              public void Add(object order) { }
+              public object Get(System.Guid id) => new();
+              public void Update(object order) { }
+              public void Delete(System.Guid id) { }
+          }
+          CS
+          dotnet build "$WORK/Acme.Tickets/src/Acme.Tickets.Api/Acme.Tickets.Api.csproj" --nologo

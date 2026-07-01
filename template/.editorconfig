@@ -1,0 +1,4 @@
+root = true
+
+[*.cs]
+# PGB003 is intentionally left at analyzer-default Info severity. Do not promote it without real-product evidence.

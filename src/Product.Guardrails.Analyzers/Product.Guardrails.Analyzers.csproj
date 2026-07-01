@@ -7,7 +7,7 @@
     <!-- Pack as a standard Roslyn analyzer package so generated products can reference it by
          PackageReference and stay portable off this machine. -->
     <IsPackable>true</IsPackable>
-    <PackageId>Product.Guardrails.Analyzers</PackageId>
+    <PackageId>CleanBackend.Guardrails.Analyzers</PackageId>
     <Version>0.1.0</Version>
     <IncludeBuildOutput>false</IncludeBuildOutput>
     <DevelopmentDependency>true</DevelopmentDependency>

@@ -1,40 +1,28 @@
 # AGENTS.md
 
-Daily contract for changing the **clean-backend-template** itself (not a generated product —
-generated products get their own AGENTS.md). Read this before writing code.
+Daily contract for changing the **clean-backend-template** itself (not a generated product — generated products get their own AGENTS.md). Read this before writing code.
 
 ## What this repo is
 
-A generator + guardrails for .NET 10 SaaS backends. Three source projects:
+A .NET 10 clean-backend baseline whose canonical route is now a standard static `dotnet new clean-backend` template under `template/`. Repository development projects remain outside `template/`:
 
-- `src/Product.Guardrails.Analyzers` — Roslyn analyzers `PGB001`, `PGB003`, `PGB006`. Packed as a
-  NuGet package so generated products reference it portably.
-- `src/Product.Abstractions` — shared `Result`, `Error`, synchronous `IValidator`.
-- `src/Product.Template.Tool` — the `bootstrap` / `new-feature` / `verify` CLI that scaffolds and
-  checks generated products.
+- `src/Product.Guardrails.Analyzers` — Roslyn analyzers `PGB001`, `PGB003`, `PGB006`. The external package ID is `CleanBackend.Guardrails.Analyzers`.
+- `src/Product.Abstractions` — development copy of shared `Result`, `Error`, synchronous `IValidator` conventions.
+- `src/Product.Template.Tool` — legacy/optional `bootstrap`, `new-feature`, and `verify` CLI. It is no longer the architectural center.
+- `template/` — generated-product skeleton only: API, copied runtime abstractions, tests, product-local verifier, docs, policy, and local analyzer feed.
 
-Tests live in `tests/` and are plain console programs (no framework), run with `dotnet run`.
+## Hard invariants
 
-## Hard invariants — do not regress
+1. **Generated products must be portable.** They reference the analyzer via pinned `PackageReference` against a product-local feed (`eng/local-feed`), never an absolute path into this repo's `bin`.
+2. **The static template is isolated.** Do not place `.template.config/template.json` at the repository root.
+3. **The analyzer package and lock file are a matched pair.** Bump package versions when content changes and refresh the template `.nupkg` plus `packages.lock.json` together.
+4. **PGB003 is heuristic and non-breaking by default.** Do not promote it to warning/error in the canonical template without real-product evidence.
+5. **`new-feature` must not silently overwrite.** Check all intended files before writing.
+6. **Verification remains a real product-local gate.** Keep required files, analyzer package reference, module facade/public-type checks, package policy, lock file checks, unresolved-placeholder checks, and guardrail-exception validation/expiry.
 
-1. **Generated products must be portable.** They reference the analyzer via `PackageReference`
-   against a product-local feed (`eng/local-feed`), never an absolute path into this repo's `bin`.
-   If you touch packaging, re-prove a generated product builds after being moved off this machine.
-2. **`--kind` is authoritative**, not the feature name. Command/query registration is derived from
-   the generated handler file, never a name heuristic.
-3. **Analyzers ship with fixtures for both the violation and the valid boundary case.** No analyzer
-   change merges without a passing/failing fixture pair.
-4. **`verify` is a real gate**: structure checks + analyzer-enabled build + locked restore +
-   package policy + guardrail-exception validity. Keep it that way.
+## How to verify
 
-## Admission control (the point of the project)
-
-Do not add analyzers, controls, or dependencies on impulse. A new guardrail belongs in the
-baseline only when it prevents a serious or recurring failure, is deterministic enough to avoid
-routine false positives, has fixtures for violation and boundary cases, and is exercised by the
-generated-product smoke tests. See `README.md` "What Not To Add Yet" and the Phase 3 backlog.
-
-## How to verify (workspace-local SDK)
+Use the workspace-local SDK if present, otherwise system `dotnet` matching `global.json`:
 
 ```bash
 ./.dotnet/dotnet build src/Product.Abstractions/Product.Abstractions.csproj --nologo
@@ -44,10 +32,8 @@ generated-product smoke tests. See `README.md` "What Not To Add Yet" and the Pha
 ./.dotnet/dotnet run --project tests/Product.Template.Tool.Tests/Product.Template.Tool.Tests.csproj
 ```
 
-The two test runs are the evidence. Do not claim a change works without them green.
+CI must also prove the static `dotnet new` path: install `template/`, create a non-`Product` project, clear analyzer caches, locked-restore immediately against the committed local-feed package, build, test, run product-local verification, search for this repository's absolute path, and ensure no `bin/`/`obj/` directories were copied.
 
-## Before you say it works
+## Do not add yet
 
-Run the analyzer fixtures and the generated-product smoke tests. The smoke tests bootstrap a
-throwaway product, scaffold command/query/weather features, and build under the real analyzers.
-Verification output is the evidence — paste it, don't assert it.
+No database provider, migrations, tenancy/auth implementation, background jobs, caching, broker/outbox, OpenTelemetry exporters, API-versioning tooling, shared runtime package, external package registry/feed, release automation, Dependabot/Renovate, or new analyzer rules without real-product evidence.

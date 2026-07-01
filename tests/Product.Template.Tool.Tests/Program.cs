@@ -48,9 +48,10 @@ static async Task RunBaselineCommandQuerySmoke(string root)
     AssertContains(Path.Combine(product, "nuget.config"), "eng/local-feed");
     AssertContains(Path.Combine(product, "nuget.config"), "https://api.nuget.org/v3/index.json");
     AssertFile(Path.Combine(product, ".editorconfig"));
-    AssertFile(Path.Combine(product, "eng", "local-feed", "Product.Guardrails.Analyzers.0.1.0.nupkg"));
+    AssertContains(Path.Combine(product, ".editorconfig"), "PGB003 is intentionally not promoted");
+    AssertFile(Path.Combine(product, "eng", "local-feed", "CleanBackend.Guardrails.Analyzers.0.1.0.nupkg"));
     var apiProject = Path.Combine(product, "src", "SampleProduct.Api", "SampleProduct.Api.csproj");
-    AssertContains(apiProject, "<PackageReference Include=\"Product.Guardrails.Analyzers\"");
+    AssertContains(apiProject, "<PackageReference Include=\"CleanBackend.Guardrails.Analyzers\"");
     AssertContains(apiProject, "<WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900</WarningsNotAsErrors>");
     AssertNotContains(apiProject, "<Analyzer Include=");
     AssertNotContains(apiProject, "bin");
@@ -63,6 +64,12 @@ static async Task RunBaselineCommandQuerySmoke(string root)
     AssertContains(Path.Combine(modules, "CreateRequest", "CreateRequestEndpoint.cs"), "EndpointResults.Created(result");
     AssertContains(Path.Combine(modules, "GetRequest", "GetRequestQueryHandler.cs"), "Task<Result<GetRequestResponse>>");
     AssertContains(Path.Combine(modules, "GetRequest", "GetRequestEndpoint.cs"), "EndpointResults.Ok(result)");
+
+    if (await RunToolRaw("new-feature", "--product", product, "--module", "Requests", "--kind", "command", "--name", "CreateRequest") == 0)
+    {
+        throw new InvalidOperationException("new-feature overwrote an existing feature instead of failing safely.");
+    }
+
     Console.WriteLine("PASS baseline command/query smoke: generated product bootstraps, scaffolds command/query, builds, verifies, and references the analyzer as a portable package");
 }
 

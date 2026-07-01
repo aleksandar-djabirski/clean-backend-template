@@ -6,7 +6,7 @@ namespace Product.Template.Tool;
 
 public static class ToolRunner
 {
-    private const string AnalyzerPackageId = "Product.Guardrails.Analyzers";
+    private const string AnalyzerPackageId = "CleanBackend.Guardrails.Analyzers";
     private const string AnalyzerPackageVersion = "0.1.0";
 
     public static async Task<int> RunAsync(string[] args, TextWriter output, TextWriter error)
@@ -155,27 +155,40 @@ public static class ToolRunner
         var productName = new DirectoryInfo(productDirectory).Name;
         var apiDirectory = Path.Combine(productDirectory, "src", $"{productName}.Api");
         var featureDirectory = Path.Combine(apiDirectory, "Modules", moduleName, featureName);
-        Directory.CreateDirectory(featureDirectory);
 
-        switch (kind)
+        var plannedFiles = kind switch
         {
-            case "command":
-                await File.WriteAllTextAsync(Path.Combine(featureDirectory, $"{featureName}Command.cs"), CommandFile(productName, moduleName, featureName));
-                await File.WriteAllTextAsync(Path.Combine(featureDirectory, $"{featureName}CommandHandler.cs"), CommandHandlerFile(productName, moduleName, featureName));
-                await File.WriteAllTextAsync(Path.Combine(featureDirectory, $"{featureName}Endpoint.cs"), CommandEndpointFile(productName, moduleName, featureName));
-                break;
-            case "query":
-                await File.WriteAllTextAsync(Path.Combine(featureDirectory, $"{featureName}Query.cs"), QueryFile(productName, moduleName, featureName));
-                await File.WriteAllTextAsync(Path.Combine(featureDirectory, $"{featureName}QueryHandler.cs"), QueryHandlerFile(productName, moduleName, featureName));
-                await File.WriteAllTextAsync(Path.Combine(featureDirectory, $"{featureName}Endpoint.cs"), QueryEndpointFile(productName, moduleName, featureName));
-                break;
-            case "weather-query":
-                await File.WriteAllTextAsync(Path.Combine(featureDirectory, $"{featureName}Query.cs"), WeatherQueryFile(productName, moduleName, featureName));
-                await File.WriteAllTextAsync(Path.Combine(featureDirectory, $"{featureName}QueryHandler.cs"), WeatherQueryHandlerFile(productName, moduleName, featureName));
-                await File.WriteAllTextAsync(Path.Combine(featureDirectory, $"{featureName}Endpoint.cs"), WeatherQueryEndpointFile(productName, moduleName, featureName));
-                break;
-            default:
-                throw new InvalidOperationException("--kind must be 'command', 'query', or 'weather-query'.");
+            "command" => new Dictionary<string, string>
+            {
+                [Path.Combine(featureDirectory, $"{featureName}Command.cs")] = CommandFile(productName, moduleName, featureName),
+                [Path.Combine(featureDirectory, $"{featureName}CommandHandler.cs")] = CommandHandlerFile(productName, moduleName, featureName),
+                [Path.Combine(featureDirectory, $"{featureName}Endpoint.cs")] = CommandEndpointFile(productName, moduleName, featureName)
+            },
+            "query" => new Dictionary<string, string>
+            {
+                [Path.Combine(featureDirectory, $"{featureName}Query.cs")] = QueryFile(productName, moduleName, featureName),
+                [Path.Combine(featureDirectory, $"{featureName}QueryHandler.cs")] = QueryHandlerFile(productName, moduleName, featureName),
+                [Path.Combine(featureDirectory, $"{featureName}Endpoint.cs")] = QueryEndpointFile(productName, moduleName, featureName)
+            },
+            "weather-query" => new Dictionary<string, string>
+            {
+                [Path.Combine(featureDirectory, $"{featureName}Query.cs")] = WeatherQueryFile(productName, moduleName, featureName),
+                [Path.Combine(featureDirectory, $"{featureName}QueryHandler.cs")] = WeatherQueryHandlerFile(productName, moduleName, featureName),
+                [Path.Combine(featureDirectory, $"{featureName}Endpoint.cs")] = WeatherQueryEndpointFile(productName, moduleName, featureName)
+            },
+            _ => throw new InvalidOperationException("--kind must be 'command', 'query', or 'weather-query'.")
+        };
+
+        var existingFiles = plannedFiles.Keys.Where(File.Exists).ToArray();
+        if (existingFiles.Length > 0)
+        {
+            throw new InvalidOperationException($"new-feature would overwrite existing files: {string.Join(", ", existingFiles)}");
+        }
+
+        Directory.CreateDirectory(featureDirectory);
+        foreach (var plannedFile in plannedFiles)
+        {
+            await File.WriteAllTextAsync(plannedFile.Key, plannedFile.Value);
         }
 
         await UpdateModuleFileAsync(apiDirectory, productName, moduleName);
@@ -676,7 +689,7 @@ public static class ToolRunner
     private static void WriteHelp(TextWriter output)
     {
         output.WriteLine("Product.Template.Tool commands:");
-        output.WriteLine("  bootstrap --name SampleProduct --module Requests --output /tmp");
+        output.WriteLine("  bootstrap --name SampleProduct --module Requests --output /tmp (legacy; dotnet new clean-backend is preferred)");
         output.WriteLine("  new-feature --product /tmp/SampleProduct --module Requests --kind command --name CreateRequest");
         output.WriteLine("  new-feature --product /tmp/SampleProduct --module Requests --kind query --name GetRequest");
         output.WriteLine("  new-feature --product /tmp/SampleProduct --module Weather --kind weather-query --name GetWeatherForecast");
@@ -795,13 +808,13 @@ public static class ToolRunner
 
     private static string EditorConfigFile()
     {
-        // PGB003 ships as Info (heuristic spike) but is promoted to a build-breaking error inside
-        // generated products, where repository/CRUD wrappers are disallowed by convention.
+        // PGB003 remains at analyzer-default Info severity. It is a heuristic spike and must stay
+        // visible without becoming build-breaking under TreatWarningsAsErrors.
         return """
         root = true
 
         [*.cs]
-        dotnet_diagnostic.PGB003.severity = error
+        # PGB003 is intentionally not promoted here.
         """;
     }
 
@@ -1241,8 +1254,8 @@ public static class ToolRunner
           `[EndpointAdapter]`, and an endpoint may inject only bound request data, a
           `CancellationToken`, and one typed command/query handler. No `HttpContext`, `IConfiguration`,
           `DbContext`, `ClaimsPrincipal`, `IMediator`, etc.
-        - **PGB003** No repository/CRUD/unit-of-work persistence wrappers (generic or hand-written).
-          Promoted to error in this product via `.editorconfig`. Use explicit business capabilities.
+        - **PGB003** Heuristically reports repository/CRUD/unit-of-work persistence wrappers (generic or hand-written).
+          It is intentionally visible but non-breaking by default until real-product evidence proves whether to promote, narrow, or retire it.
 
         ## Conventions
 
